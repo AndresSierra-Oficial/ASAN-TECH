@@ -1,0 +1,53 @@
+---
+# roles/despliegue-dinamico-servicios/tasks/nextcloud.yml
+# Crear despliegue para Nextcloud
+- name: Crear despliegue para Nextcloud
+  k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "nextcloud-deployment"
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: "{{ nextcloud_selector }}"
+        template:
+          metadata:
+            labels:
+              app: "{{ nextcloud_selector }}"
+          spec:
+            containers:
+              - name: "nextcloud"
+                image: "nextcloud"
+                ports:
+                  - containerPort: "{{ nextcloud_port }}"
+                volumeMounts:
+                  - name: "{{ nextcloud_volume }}"
+                    mountPath: /var/www/html
+            volumes:
+              - name: "{{ nextcloud_volume }}"
+                persistentVolumeClaim:
+                  claimName: "{{ nextcloud_pvc }}"
+
+# Crear servicio para Nextcloud
+- name: Crear servicio para Nextcloud
+  k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "nextcloud-service"
+      spec:
+      type: NodePort
+      ports:
+        - protocol: TCP
+        - port: "{{ nextcloud_port }}"
+          targetPort: "{{ nextcloud_port }}"
+          nodePort: "{{ nextcloud_nodeport }}"
+      selector:
+        app: "{{ nextcloud_selector }}"
+          

@@ -1,0 +1,5 @@
+---
+- hosts: worker1
+  become: yes
+  roles:
+    - despliegue-web

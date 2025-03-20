@@ -1,0 +1,12 @@
+[all:vars]
+ansible_user=asan
+
+[master]
+master1 ansible_host=master1
+
+[workers]
+worker1 ansible_host=worker1
+
+[kubecluster:children]
+master
+workers

@@ -1,0 +1,9 @@
+---
+# incluir las tareas de despliegue de los servicios
+- name: Desplegar Nextcloud
+  include_tasks: nextcloud.yml
+  when: servicio_elegido == 'nextcloud'
+
+- name: Desplegar FacturaScript
+  include_tasks: facturascript.yml
+  when: servicio_elegido == 'facturascript'

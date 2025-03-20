@@ -1,0 +1,42 @@
+# Instalar La la biblioteca kubernetes para que le modulo k8s la tenga.
+- name: Instalar la biblioteca kubernetes
+  pip:
+    name: kubernetes
+    executable: pip3
+    extra_args: --break-system-packages
+  become: true
+
+#-------------------------------------------------------
+#  Creando certificados.
+#-------------------------------------------------------
+# Crear directorio para los certificados
+- name: Crear directorio para los certificados
+  file:
+    path: "{{ cert_dir }}"
+    state: directory
+    mode: '0755'
+
+# Generar certificado wildcard autofirmado
+- name: Generar certificado wildcard autofirmado
+  command: >
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048
+    -keyout {{ cert_dir }}/{{ cert_name }}.key
+    -out {{ cert_dir }}/{{ cert_name }}.crt
+    -subj "/CN={{ domain }}"
+  args:
+    creates: "{{ cert_dir }}/{{ cert_name }}.crt"  # No regenerar si ya existe
+
+
+- name: Copiando wildcard-asantech.crt desde master1 al nodo de control
+  fetch:
+    src: /tmp/certs/wildcard-asantech.crt
+    dest: /tmp/certs/wildcard-asantech.crt
+    flat: yes  # Evita la creación de una estructura de directorios adicional
+    delegate_to: master1
+
+- name: Copiando  wildcard-asantech.key desde master1 al nodo de control
+  fetch:
+    src: /tmp/certs/wildcard-asantech.key
+    dest: /tmp/certs/wildcard-asantech.key
+    flat: yes  # Evita la creación de una estructura de directorios adicional
+    delegate_to: master1

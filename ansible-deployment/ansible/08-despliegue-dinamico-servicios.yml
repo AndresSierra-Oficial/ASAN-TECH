@@ -1,0 +1,6 @@
+---
+- name: Desplegar servicio dinámico (Nextcloud o FacturaScript)
+  hosts: worker1
+  become: yes
+  roles:
+    - despliegue-dinamico-servicios

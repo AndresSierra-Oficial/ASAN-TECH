@@ -1,0 +1,58 @@
+
+#-------------------------------------------------------
+# 1. dependencias
+#-------------------------------------------------------
+# ----  Instalación kubernetes  ----
+# Añadir la clave GPG de Kubernetes
+- name: Crear directorio para claves GPG
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Descargando GPG key securely para Kubernetes
+  shell: curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  become: true
+
+
+- name: Cambiar permisos del archivo GPG
+  file:
+    path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    mode: '0644'
+
+- name: Agregar Repositorio de Kubernetes
+  shell: echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+  become: true
+
+- name: Cambiar permisos del archivo kubernenetes.list
+  file:
+    path: /etc/apt/sources.list.d/kubernetes.list
+    mode: '0644'
+
+# Actualizar Repositorios
+- name: Actualizar los Repositorios
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+#-------------------------------------------------------
+# 2. Desactivar el swap
+#-------------------------------------------------------
+- name: Desactivando memoria swap para Kubernetes
+  command: swapoff -a
+
+- name: Desactivar swap en /etc/fstab
+  lineinfile:
+    path: /etc/fstab
+    regexp: '^/swap.img'
+    line: '#/swap.img none swap sw 0 0'
+    state: present
+
+- name: Crear directorio .kube en el nodo worker1
+  file:
+    path: "{{ home_user_ansible }}/.kube"
+    state: directory
+    mode: '0755'
+    owner: "{{ user_id_ansible }}"
+    group: "{{ user_group_ansible }}"
+

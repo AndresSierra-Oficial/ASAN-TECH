@@ -1,0 +1,231 @@
+
+#-------------------------------------------------------
+# 3. firewall
+#-------------------------------------------------------
+# Configuración del firewall
+- name: Habilitando el firewall
+  ufw:
+    state: enabled
+# Permitir tráfico en los puertos necesarios del master
+- name: Permitir tráfico en los puertos necesarios del master
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - 6443  # Kubernetes API server
+    - 2379  # etcd client requests
+    - 2380  # etcd peer communication
+    - 22    # SSH
+    - 8080  # Optional: Kubernetes API insecure port
+    - 10250 # Kubelet API
+    - 10251 # Scheduler
+    - 10252 # Controller Manager
+    - 10255 # Read-only Kubelet API
+    - 5473  # Calico networking
+    
+- name: Abrir puertos de NodePort en el firewall
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "30000:32767"
+# Recargar Firewall
+- name: Recargamos el firewall
+  command: ufw reload
+
+#----------------------------------------------
+# 4. Reglas forward y Modulos del kernel
+#----------------------------------------------
+# Preparando el sistema para instalar Docker y Containerd
+- name: Añadiendo modulos del kernel para Containerd
+  copy:
+    dest: /etc/modules-load.d/containerd.conf
+    content: |
+      overlay
+      br_netfilter
+
+- name: Load kernel modules for Containerd
+  command: modprobe overlay && modprobe br_netfilter
+  become: true
+
+- name: Añadiendo modulos del kernel para Kubernetes
+  copy:
+    dest: /etc/sysctl.d/kubernetes.conf
+    content: |
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.bridge.bridge-nf-call-iptables = 1
+      net.ipv4.ip_forward = 1
+
+- name: Aplicar cambios de configuración
+  command: sysctl --system
+
+#-------------------------------------------------------
+# 5. Instalación de Paquetes y Configuración
+#-------------------------------------------------------
+# 1. containerd
+- name: Instalando containerd
+  apt:
+    name: containerd
+    state: present
+    update_cache: yes
+  become: true
+
+    # 1. configuración
+  # Crear el directorio /etc/containerd si no existe
+- name: Crear directorio /etc/containerd
+  file:
+    path: /etc/containerd
+    state: directory
+    mode: '0777'
+
+      # Crear la configuración por defecto de containerd
+- name: Crear la configuración por defecto de containerd
+  shell: containerd config default > /etc/containerd/config.toml
+  become: true
+  args:
+      creates: /etc/containerd/config.toml
+
+- name: Añadir configuración del mirror de Docker
+  blockinfile:
+    path: /etc/containerd/config.toml
+    insertafter: '^\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\.mirrors\]'
+    block: |
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+        endpoint = ["https://mirror.gcr.io"]
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - containerd mirror config"
+
+    # 2. plugin CRI
+- name: Configuring Containerd (Setting SystemdCgroup Variable to True)
+  replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  become: true
+
+    # 3. Reiniciar y Habilitar containerd para que se inicie automáticamente al arrancar el sistema
+- name: Reiniciar containerd
+  systemd:
+    name: containerd
+    state: restarted
+
+- name: Habilitar containerd
+  systemd:
+    name: containerd
+    enabled: yes
+
+# 2. kubernetes
+  # Instalamos
+- name: Instalando kubeadm, kubelet, kubectl
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: yes
+
+- name: Manterner versiones de kubeadm, kubelet, kubectl
+  command: apt-mark hold kubelet kubeadm kubectl
+  become: true
+
+  # Habilitar kubelet y verificar la instalación
+- name: Habilitat kubelet
+  command: systemctl enable --now kubelet
+  become: true
+
+#-------------------------------------------------------
+#-------------------------------------------------------
+# 1. Iniciar el cluster
+#-------------------------------------------------------
+# - name: Pull kubeadm container images
+  # command: kubeadm config images pull --kubernetes-version v1.30.10
+  # become: true
+
+- name: Inicializar el clúster de Kubernetes
+  command: kubeadm init --apiserver-advertise-address={{ ip_master }} --pod-network-cidr={{ pod_network }}
+  args:
+    creates: /etc/kubernetes/admin.conf
+
+#-------------------------------------------------------
+# 2. configurar kubectl para el usuario actual
+#-------------------------------------------------------
+- name: Configurar kubectl para el usuario actual
+  block:
+    - name: Copiar el archivo de configuración de Kubernetes
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ home_user_ansible }}/.kube/config"
+        remote_src: yes
+        mode: '0644'
+    - name: Cambiar el propietario del archivo config
+      file:
+        path: "{{ home_user_ansible }}/.kube/config"
+        owner: "{{ ansible_user_id }}"
+        group: "{{ user_group_ansible }}"
+        mode: '0644'
+      become: yes  # Esto es importante para cambiar el dueño como root
+
+- name: Traer el archivo de configuración desde el nodo master al nodo de control
+  fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: /tmp/admin.conf  # Ruta temporal en el nodo de control
+    flat: yes  # Conservar el nombre del archivo sin incluir la ruta del host
+  when: inventory_hostname == "master1"
+
+#-------------------------------------------------------
+# 3. Crear el comando de union del worker	
+#-------------------------------------------------------
+- name: Obtener el comando de unión del worker
+  command: kubeadm token create --print-join-command
+  register: join_command
+
+- name: Extraer el token del comando de unión
+  set_fact:
+    kubeadm_token: "{{ join_command.stdout | regex_search('--token\\s+(\\S+)', '\\1') | first }}"
+
+- name: Extraer el hash del certificado CA del comando de unión
+  set_fact:
+    kubeadm_ca_hash: "{{ join_command.stdout | regex_search('--discovery-token-ca-cert-hash\\s+(\\S+)', '\\1') | first }}"
+
+
+- name: Mostrar el token y el hash generados
+  debug:
+    msg: >
+      Token generado: {{ kubeadm_token }}
+      Hash del certificado CA: {{ kubeadm_ca_hash }}
+  when: inventory_hostname == "master1"
+
+- name: Guardar el token y el hash en un archivo temporal
+  copy:
+    content: |
+      kubeadm_token: "{{ kubeadm_token }}"
+      kubeadm_ca_hash: "{{ kubeadm_ca_hash }}"
+    dest: /tmp/kubeadm_join_vars.yml
+  when: inventory_hostname == "master1"
+
+- name: Copiar el archivo al nodo de control
+  fetch:
+    src: /tmp/kubeadm_join_vars.yml
+    dest: /tmp/kubeadm_join_vars.yml
+    flat: yes
+
+#-------------------------------------------------------
+# 4. desplegar plugin de red.
+#-------------------------------------------------------
+- name: Desplegar un plugin de red (Calico)
+  command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+  environment:
+    KUBECONFIG: /home/asan/.kube/config
+  when: inventory_hostname == "master1"
+
+
+- name: Instalar la biblioteca kubernetes
+  pip:
+    name: kubernetes
+    executable: pip3
+    extra_args: --break-system-packages
+  become: true
+
+

@@ -1,0 +1,329 @@
+# Antes del despliegue hay que pasarle los archivos de la app-web
+#-------------------------------------------------------
+# 1. Copiar el código PHP al nodo worker
+#-------------------------------------------------------
+- name: Copiar el código PHP al nodo worker
+  copy:
+    src: "{{ playbook_dir }}/../web/"  # Ruta en el host de Ansible
+    dest: "{{ web_app_path }}"  # Ruta en el nodo worker
+    owner: asan
+    group: asan
+    mode: '0755'
+  delegate_to: worker1  # Asegúrate de que la tarea se ejecute en worker1
+
+# Instalar La la biblioteca kubernetes para que le modulo k8s la tenga.
+- name: Instalar la biblioteca kubernetes
+  pip:
+    name: kubernetes
+    executable: pip3
+    extra_args: --break-system-packages
+  become: true
+
+- name: Crear el namespace para db_web
+  k8s:
+    state: present
+    kubeconfig: /home/asan/.kube/config
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ namespace_asantech }}"
+
+- name: Copiando wildcard-asantech.crt de Kubernetes al nodo worker1
+  copy:
+    src: /tmp/certs/wildcard-asantech.crt
+    dest: /tmp/certs/wildcard-asantech.crt
+    owner: "{{ ansible_user_id }}"
+    group: "{{ user_group_ansible }}"
+
+- name: Copiar wildcard-asantech.key de Kubernetes al nodo worker1
+  copy:
+    src: /tmp/certs/wildcard-asantech.key
+    dest: /tmp/certs/wildcard-asantech.key
+    owner: "{{ ansible_user_id }}"
+    group: "{{ user_group_ansible }}"
+#-------------------------------------------------------
+# 1. Desplegar la base de datos MariaDB
+#-------------------------------------------------------
+- name: Crear PersistentVolume para MariaDB
+  k8s:
+    state: present
+    kubeconfig: /home/asan/.kube/config
+    definition:
+      apiVersion: v1
+      kind: PersistentVolume
+      metadata:
+        name: mariadb-data-pv
+      spec:
+        capacity:
+          storage: 5Gi
+        accessModes:
+          - ReadWriteOnce
+        persistentVolumeReclaimPolicy: Retain
+        hostPath:
+          path: /mnt/data # Asegúrate de que esta ruta exista en el nodo
+
+
+- name: Crear PersistentVolumeClaim para MariaDB
+  k8s:
+    state: present
+    kubeconfig: /home/asan/.kube/config
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: mariadb-data
+        namespace: "{{ namespace_asantech }}"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+# Creamos el despliegue de la base de datos.
+- name: Crear despliegue para MariaDB
+  k8s:
+    state: present
+    kubeconfig: /home/asan/.kube/config
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ db_name }}-deployment"
+        namespace: "{{ namespace_asantech }}"
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: "{{ db_name }}"
+        template:
+          metadata:
+            labels:
+              app: "{{ db_name }}"
+          spec:
+            containers:
+              - name: "{{ db_name }}"
+                image: "{{ db_image }}"
+                env:
+                  - name: MYSQL_ROOT_PASSWORD
+                    value: "{{ db_root_password }}"
+                  - name: MYSQL_DATABASE
+                    value: "{{ db_database }}"
+                  - name: MYSQL_USER
+                    value: "{{ db_user }}"
+                  - name: MYSQL_PASSWORD
+                    value: "{{ db_password }}"
+                ports:
+                  - containerPort: "{{ db_port }}"
+                volumeMounts:
+                  - name: "{{ db_volume_name }}"
+                    mountPath: "{{ db_volume_path }}"
+            volumes:
+              - name: "{{ db_volume_name }}"
+                persistentVolumeClaim:
+                  claimName: mariadb-data
+
+# Crear el Servicio para la Base De Datos
+- name: Crear servicio para MariaDB
+  k8s:
+    state: present
+    kubeconfig: /home/asan/.kube/config
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ db_name }}-service"
+        namespace: "{{ namespace_asantech }}"
+      spec:
+        type: ClusterIP
+        ports:
+          - port: "{{ db_port }}"
+            targetPort: "{{ db_port }}"
+        selector:
+          app: "{{ db_name }}"
+
+#-------------------------------------------------------
+# 2. Desplegar la aplicación web con PHP y Apache
+#-------------------------------------------------------
+- name: Crear ConfigMap con el script de configuración de Apache
+  k8s:
+    state: present
+    kubeconfig: /home/asan/.kube/config
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: init-script-configmap
+        namespace: "{{ namespace_asantech }}"
+      data:
+        init.sh: |
+          #!/bin/bash
+
+          # Modificar la configuración de Apache para que use las variables de entorno
+          echo "Configurando Apache con las variables de entorno..."
+
+          # Configurar SERVER_NAME en el archivo de configuración de Apache
+          echo "ServerName ${SERVER_NAME}" >> /etc/apache2/apache2.conf
+
+          # Configurar DOCUMENT_ROOT en el archivo de configuración de Apache
+          echo "DocumentRoot ${DOCUMENT_ROOT}" >> /etc/apache2/sites-available/000-default.conf
+
+          # Reiniciar Apache para aplicar las configuraciones
+          echo "Reiniciando Apache..."
+          apachectl -D FOREGROUND
+          
+- name: Crear despliegue para la aplicación web
+  k8s:
+    state: present
+    kubeconfig: /home/asan/.kube/config
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ web_app_name }}-deployment"
+        namespace: "{{ namespace_asantech }}"
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: "{{ web_app_name }}"
+        template:
+          metadata:
+            labels:
+              app: "{{ web_app_name }}"
+          spec:
+            containers:
+              - name: "{{ web_app_name }}"
+                image: "{{ web_app_image }}"
+                env:
+                  - name: DB_HOST
+                    value: "{{ db_name }}-service"  # Nombre del servicio de MariaDB
+                  - name: DB_USER
+                    value: "{{ db_user }}"
+                  - name: DB_PASSWORD
+                    value: "{{ db_password }}"
+                  - name: DB_DATABASE
+                    value: "{{ db_database }}"
+                  - name: SERVER_NAME
+                    value: "{{ server_name }}"  # Variable de entorno SERVER_NAME
+                  - name: DOCUMENT_ROOT
+                    value: "{{ document_root }}"  # Variable de entorno DOCUMENT_ROOT
+                ports:
+                  - containerPort: "{{ web_app_port }}"
+                volumeMounts:
+                  - name: "{{ web_app_name_volume }}"
+                    mountPath: /var/www/html  # Ruta del código PHP dentro del contenedor
+                  - name: init-script-volume
+                    mountPath: /usr/local/bin/init.sh  # Copiar el script de inicialización
+                    subPath: init.sh  # Montar solo el archivo de script
+            volumes:
+              - name: "{{ web_app_name_volume }}"
+                hostPath:
+                  path: "{{ web_app_path }}"  # Ruta al código PHP en el host
+              - name: init-script-volume
+                configMap:
+                  name: init-script-configmap  # Usamos el ConfigMap creado antes
+
+
+# Creamos el servicio de la web
+- name: Crear servicio para la aplicación web
+  k8s:
+    state: present
+    kubeconfig: /home/asan/.kube/config
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ web_app_name }}-service"
+        namespace: "{{ namespace_asantech }}"
+      spec:
+        type: NodePort
+        ports:
+          - protocol: TCP
+            port: "{{ web_app_port }}"
+            targetPort: "{{ web_app_port }}"
+            nodePort: "{{ web_app_nodeport }}"
+        selector:
+          app: "{{ web_app_name }}"
+
+#-------------------------------------------------------
+# 3. Crear un secreto TLS para el certificado SSL
+#-------------------------------------------------------
+- name: Crear secreto TLS en Kubernetes
+  k8s:
+    state: present
+    kubeconfig: /home/asan/.kube/config
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ cert_name }}"
+        namespace: "{{ namespace_asantech }}"
+      type: kubernetes.io/tls
+      data:
+        tls.crt: "{{ lookup('file', cert_dir + '/' + cert_name + '.crt') | b64encode }}"
+        tls.key: "{{ lookup('file', cert_dir + '/' + cert_name + '.key') | b64encode }}"
+
+#-------------------------------------------------------
+# 4. Verificar el estado de los despliegues y servicios
+#-------------------------------------------------------
+- name: Verificar el estado del despliegue de MariaDB
+  k8s_info:
+    kind: Deployment
+    name: "{{ db_name }}-deployment"
+    namespace: "{{ namespace_asantech }}"
+    kubeconfig: /home/asan/.kube/config
+  register: db_deployment_status
+
+- name: Mostrar el estado del despliegue de MariaDB
+  debug:
+    msg: "{{ db_deployment_status.resources[0].status }}"
+
+- name: Verificar el estado del servicio de MariaDB
+  k8s_info:
+    kind: Service
+    name: "{{ db_name }}-service"
+    namespace: "{{ namespace_asantech }}"
+    kubeconfig: /home/asan/.kube/config
+  register: db_service_status
+
+- name: Mostrar el estado del servicio de MariaDB
+  debug:
+    msg: "{{ db_service_status.resources[0].spec }}"
+
+- name: Verificar el estado del despliegue de la aplicación web
+  k8s_info:
+    kind: Deployment
+    name: "{{ web_app_name }}-deployment"
+    namespace: "{{ namespace_asantech }}"
+    kubeconfig: /home/asan/.kube/config
+  register: web_deployment_status
+
+- name: Mostrar el estado del despliegue de la aplicación web
+  debug:
+    msg: "{{ web_deployment_status.resources[0].status }}"
+
+- name: Verificar el estado del servicio de la aplicación web
+  k8s_info:
+    kind: Service
+    name: "{{ web_app_name }}-service"
+    namespace: "{{ namespace_asantech }}"
+    kubeconfig: /home/asan/.kube/config
+  register: web_service_status
+
+- name: Mostrar el estado del servicio de la aplicación web
+  debug:
+    msg: "{{ web_service_status.resources[0].spec }}"
+
+- name: Verificar el estado del secreto TLS
+  k8s_info:
+    kind: Secret
+    name: "{{ cert_name }}"
+    namespace: "{{ namespace_asantech }}"
+    kubeconfig: /home/asan/.kube/config
+  register: tls_secret_status
+
+- name: Mostrar el estado del secreto TLS
+  debug:
+    msg: "{{ tls_secret_status.resources[0].data }}"
