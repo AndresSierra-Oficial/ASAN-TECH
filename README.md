@@ -20,9 +20,7 @@ con los datos del usuario pasado por variables y el software que quiere contrata
 
 Además, para no guardar contraseñas vamos a usar un hash para verificar las credenciales de usuarios. 
 Protegiéndonos ante fuga de contraseñas.
-
------------------------------------------------------
-    --- Estructura del Proyecto ---
+## Estructura del Proyecto
 -----------------------------------------------------
 /proyecto
 │
@@ -64,15 +62,6 @@ Protegiéndonos ante fuga de contraseñas.
 |    └── init_asantech.sql
 ├────────────────────────
 -----------------------------------------------------
-    --- RESUMEN GENERAL ---
-    - 1. Preconfiguración: Configura los hosts (usuarios, SSH, swap, etc.).
-    - 3. Instalación de Kubernetes: Instala Kubernetes en el Master y los Workers.
-    - 4. Inicialización del clúster: Inicializa Kubernetes en el Master y une los Workers.
-    - 5. Despliegue de servicios: Despliega MySQL y la página web en Kubernetes.
-    - 6. Verificación: Verifica que todo esté funcionando correctamente.
--------------------------------------------------------------------------
-    --- Despliegue del Proyecto ---
-    ----------------------
 1. Tareas de Configuración Previa. (Más abajo)
     ----------------------
 2. Ejecutar el playbook de despliegue desde /mnt/carp_com/ASAN_TECH/zz_Pruebas-Ubuntu
@@ -94,7 +83,7 @@ Protegiéndonos ante fuga de contraseñas.
     para desplegar servicios desde la página web.
 
 -------------------------------------------------------------------------
-    --- 1. Configuración Previa ---
+## 1. Configuración Previa ---
 *** Se han creado scripts para la configuración previa de los hosts remotos y de ansible,
 a continuación se detallan los pasos a seguir en caso de duda.
 
@@ -166,27 +155,22 @@ entonces usaremos ese usuario para todo.
     3. Instalar y generar las claves SSH
     - Instalar ssh
         apt install openssh-server -y
-
     - Generar la clave
     * Hacerlo todo con el usuario asan.
         asan@ansible: sudo ssh-keygen -t rsa -b 4096
-
     - Pulsar "/home/asan/.ssh/id_rsa" para guardar las claves
     - Deja en blanco la contraseña
     - verificar que se han creado:
             ls ~/.ssh/
-
     - Pasar la clave a los hosts.
         ssh-copy-id -i ~/.ssh/id_rsa.pub asan@master1
         ssh-copy-id -i ~/.ssh/id_rsa.pub asan@worker1
-
     - Permisos de los archivos
         sudochmod 700 /home/asan/.ssh
         sudo chmod 600 /home/asan/.ssh/id_rsa
         sudo chmod 644 /home/asan/.ssh/id_rsa.pub
         sudo chmod 644 /home/asan/.ssh/authorized_keys
         sudo chown -R asan:asan /home/asan/.ssh
-
     - Verificar Conexión y Revisar que se han pasado las claves:
         ssh asan@192.168.1.12
         cat ~/.ssh/authorized_keys
@@ -195,7 +179,6 @@ entonces usaremos ese usuario para todo.
     -- Configmap
         kubectl apply -f kubernetes/web-configmap.yaml
         kubectl get configmap web-files -o yaml
-
         kubectl apply -f kubernetes/mysql-secret.yaml
         kubectl apply -f kubernetes/mysql-deployment.yaml
         kubectl apply -f kubernetes/mysql-service.yaml
