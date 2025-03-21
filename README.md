@@ -1,7 +1,7 @@
 ## ASAN-TECH
  Repositorio creado para el desarrollo y la implementación 
  del TFG de Grado Superior de Administración de Sistemas en Red.
- Tutulo:       ASAN-TECH 
+ Título:       ASAN-TECH 
  Autores:      Asier García y Andrés Sierra
  
 ## CONCEPTO GENERALES DEL PROYECTO
